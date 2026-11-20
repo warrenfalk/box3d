@@ -288,6 +288,7 @@ typedef struct b3StepContext
 	// Array of bullet bodies that need continuous collision handling
 	int* bulletBodies;
 	b3AtomicInt bulletBodyCount;
+	float* bulletFractions;
 
 	b3AtomicInt anyRestitution;
 

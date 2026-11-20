@@ -325,6 +325,32 @@ typedef struct b3ContinuousContext
 	int rootIterations;
 } b3ContinuousContext;
 
+static b3ShapeId b3ContinuousShapeId( const b3World* world, const b3Shape* shape )
+{
+	return (b3ShapeId){ shape->id + 1, world->worldId, shape->generation };
+}
+
+static bool b3ContinuousFilterAllows( b3World* world, const b3Shape* a, const b3Shape* b )
+{
+	if ( ( ( a->flags | b->flags ) & b3_enableCustomFiltering ) == 0 || world->customFilterFcn == NULL )
+	{
+		return true;
+	}
+	return world->customFilterFcn( b3ContinuousShapeId( world, a ), b3ContinuousShapeId( world, b ),
+								   world->customFilterContext );
+}
+
+static bool b3ContinuousPreSolveAllows( b3World* world, const b3Shape* a, const b3Shape* b, b3Pos base,
+										const b3TOIOutput* hit )
+{
+	if ( ( ( a->flags | b->flags ) & b3_enablePreSolveEvents ) == 0 || world->preSolveFcn == NULL )
+	{
+		return true;
+	}
+	return world->preSolveFcn( b3ContinuousShapeId( world, a ), b3ContinuousShapeId( world, b ),
+							   b3OffsetPos( base, hit->point ), hit->normal, world->preSolveContext );
+}
+
 // This is called from b3DynamicTree_Query for continuous collision
 static bool b3ContinuousQueryCallback( int proxyId, uint64_t userData, void* context )
 {
@@ -386,20 +412,9 @@ static bool b3ContinuousQueryCallback( int proxyId, uint64_t userData, void* con
 		return true;
 	}
 
-	// Custom user filtering
-	if ( ( shape->flags & b3_enableCustomFiltering ) != 0 || ( fastShape->flags & b3_enableCustomFiltering ) != 0 )
+	if ( !b3ContinuousFilterAllows( world, shape, fastShape ) )
 	{
-		b3CustomFilterFcn* customFilterFcn = world->customFilterFcn;
-		if ( customFilterFcn != NULL )
-		{
-			b3ShapeId idA = { shape->id + 1, world->worldId, shape->generation };
-			b3ShapeId idB = { fastShape->id + 1, world->worldId, fastShape->generation };
-			canCollide = customFilterFcn( idA, idB, world->customFilterContext );
-			if ( canCollide == false )
-			{
-				return true;
-			}
-		}
+		return true;
 	}
 
 	// todo does having a sweep on shapeA help with bullets?
@@ -425,25 +440,15 @@ static bool b3ContinuousQueryCallback( int proxyId, uint64_t userData, void* con
 			continuousContext->sensorCount += 1;
 		}
 	}
-	else if ( 0.0f < output.fraction && output.fraction < continuousContext->fraction )
+	else if ( 0.0f < output.fraction && output.fraction < continuousContext->fraction &&
+			  b3ContinuousPreSolveAllows( world, shape, fastShape, continuousContext->base, &output ) )
 	{
-		bool didHit = true;
-
-		if ( didHit && ( ( shape->flags & b3_enablePreSolveEvents ) || ( fastShape->flags & b3_enablePreSolveEvents ) ) )
-		{
-			b3ShapeId shapeIdA = { shape->id + 1, world->worldId, shape->generation };
-			b3ShapeId shapeIdB = { fastShape->id + 1, world->worldId, fastShape->generation };
-			b3Pos point = b3OffsetPos( continuousContext->base, output.point );
-			didHit = world->preSolveFcn( shapeIdA, shapeIdB, point, output.normal, world->preSolveContext );
-		}
-
-		if ( didHit )
-		{
-			continuousContext->fraction = output.fraction;
-			continuousContext->distanceIterations = b3MaxInt( continuousContext->distanceIterations, output.distanceIterations );
-			continuousContext->pushBackIterations = b3MaxInt( continuousContext->pushBackIterations, output.pushBackIterations );
-			continuousContext->rootIterations = b3MaxInt( continuousContext->rootIterations, output.rootIterations );
-		}
+		continuousContext->fraction = output.fraction;
+		continuousContext->distanceIterations =
+			b3MaxInt( continuousContext->distanceIterations, output.distanceIterations );
+		continuousContext->pushBackIterations =
+			b3MaxInt( continuousContext->pushBackIterations, output.pushBackIterations );
+		continuousContext->rootIterations = b3MaxInt( continuousContext->rootIterations, output.rootIterations );
 	}
 
 	// Continue query
@@ -480,7 +485,8 @@ static bool b3IsShapeFast( const b3Shape* shape, b3Vec3 centroid1, b3Vec3 centro
 }
 
 // Continuous collision of dynamic versus static
-static void b3SolveContinuous( b3World* world, int bodySimIndex, b3TaskContext* taskContext, float dt )
+static void b3SolveContinuous( b3World* world, int bodySimIndex, b3TaskContext* taskContext, float dt,
+							   float maxFraction )
 {
 	b3TracyCZoneNC( ccd, "CCD", b3_colorDarkGoldenRod, true );
 
@@ -511,7 +517,7 @@ static void b3SolveContinuous( b3World* world, int bodySimIndex, b3TaskContext* 
 	context.sweep = sweep;
 	context.base = base;
 	context.fastBodySim = fastBodySim;
-	context.fraction = 1.0f;
+	context.fraction = maxFraction;
 
 	bool isBullet = ( fastBodySim->flags & b3_isBullet ) != 0;
 	float safetyFactor = fastBody->safetyFactor;
@@ -799,7 +805,7 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 				}
 				else
 				{
-					b3SolveContinuous( world, simIndex, taskContext, timeStep );
+					b3SolveContinuous( world, simIndex, taskContext, timeStep, 1.0f );
 				}
 			}
 			else
@@ -1421,6 +1427,100 @@ static void b3SolverTask( void* taskContext )
 	}
 }
 
+typedef struct b3BulletPairContext
+{
+	b3StepContext* step;
+	const b3BodySim* sims;
+	b3Shape* shape;
+	int bulletIndex;
+} b3BulletPairContext;
+
+static bool b3CustomBulletPairCallback( int proxyId, uint64_t userData, void* context )
+{
+	B3_UNUSED( proxyId );
+	b3BulletPairContext* pair = context;
+	b3World* world = pair->step->world;
+	int indexA = pair->bulletIndex;
+	int indexB = (int)( userData >> 32 );
+	b3Shape* shapeA = pair->shape;
+	b3Shape* shapeB = b3Array_Get( world->shapes, (int)( userData & UINT32_MAX ) );
+	if ( indexA == indexB )
+	{
+		return true;
+	}
+
+	// Canonical order keeps the cast independent of the order that workers queued bullets.
+	if ( shapeA->id > shapeB->id )
+	{
+		B3_SWAP( shapeA, shapeB );
+		B3_SWAP( indexA, indexB );
+	}
+	if ( b3GetCustomHull( shapeA )->callbacks != b3GetCustomHull( shapeB )->callbacks ||
+		 !b3ShouldShapesCollide( shapeA->filter, shapeB->filter ) ||
+		 !b3ShouldBodiesCollide( world, b3Array_Get( world->bodies, shapeA->bodyId ),
+								 b3Array_Get( world->bodies, shapeB->bodyId ) ) ||
+		 !b3ContinuousFilterAllows( world, shapeA, shapeB ) )
+	{
+		return true;
+	}
+
+	const b3BodySim* bodyA = pair->sims + pair->step->bulletBodies[indexA];
+	const b3BodySim* bodyB = pair->sims + pair->step->bulletBodies[indexB];
+	b3Pos base = bodyA->center0;
+	b3Sweep sweepA = b3MakeRelativeSweep( bodyA, base );
+	b3Sweep sweepB = b3MakeRelativeSweep( bodyB, base );
+	b3TOIOutput hit = b3ShapeTimeOfImpact( shapeA, shapeB, &sweepA, &sweepB, 1.0f );
+	if ( 0.0f < hit.fraction && hit.fraction < 1.0f && b3ContinuousPreSolveAllows( world, shapeA, shapeB, base, &hit ) )
+	{
+		float* fractions = pair->step->bulletFractions;
+		fractions[indexA] = b3MinFloat( fractions[indexA], hit.fraction );
+		fractions[indexB] = b3MinFloat( fractions[indexB], hit.fraction );
+	}
+	return true;
+}
+
+static void b3FindCustomBulletImpacts( b3StepContext* step, int bulletCount )
+{
+	// Finish the pair queries before any bullet worker advances a body. The temporary tree
+	// covers both sweeps, even when neither sweep reaches the other body's starting AABB.
+	b3World* world = step->world;
+	const b3BodySim* sims = b3GetSolverSet( world, b3_awakeSet )->bodySims.data;
+	b3DynamicTree tree = { 0 };
+	for ( int i = 0; i < bulletCount; ++i )
+	{
+		const b3BodySim* sim = sims + step->bulletBodies[i];
+		const b3Body* body = b3Array_Get( world->bodies, sim->bodyId );
+		for ( int id = body->headShapeId; id != B3_NULL_INDEX; id = world->shapes.data[id].nextShapeId )
+		{
+			b3Shape* shape = b3Array_Get( world->shapes, id );
+			if ( b3GetCustomHull( shape ) == NULL )
+			{
+				continue;
+			}
+			if ( step->bulletFractions == NULL )
+			{
+				step->bulletFractions =
+					b3StackAlloc( &world->stack, bulletCount * sizeof( float ), "custom bullet fractions" );
+				for ( int j = 0; j < bulletCount; ++j )
+				{
+					step->bulletFractions[j] = 1.0f;
+				}
+				tree = b3DynamicTree_Create( bulletCount );
+			}
+			b3Sweep sweep = b3MakeRelativeSweep( sim, sim->center0 );
+			b3AABB bounds = b3OffsetAABB( b3ComputeSweptShapeAABB( shape, &sweep, 1.0f ), sim->center0 );
+			b3BulletPairContext pair = { step, sims, shape, i };
+			b3DynamicTree_Query( &tree, bounds, B3_DEFAULT_MASK_BITS, false, b3CustomBulletPairCallback, &pair );
+			uint64_t key = ( (uint64_t)i << 32 ) | (uint32_t)id;
+			b3DynamicTree_CreateProxy( &tree, bounds, B3_DEFAULT_CATEGORY_BITS, key );
+		}
+	}
+	if ( step->bulletFractions != NULL )
+	{
+		b3DynamicTree_Destroy( &tree );
+	}
+}
+
 static void b3BulletBodyTask( int startIndex, int endIndex, int workerIndex, void* context )
 {
 	b3TracyCZoneNC( bullet_body_task, "Bullet Body Task", b3_colorLightSkyBlue, true );
@@ -1433,7 +1533,8 @@ static void b3BulletBodyTask( int startIndex, int endIndex, int workerIndex, voi
 	for ( int i = startIndex; i < endIndex; ++i )
 	{
 		int simIndex = stepContext->bulletBodies[i];
-		b3SolveContinuous( stepContext->world, simIndex, taskContext, stepContext->dt );
+		float fraction = stepContext->bulletFractions != NULL ? stepContext->bulletFractions[i] : 1.0f;
+		b3SolveContinuous( stepContext->world, simIndex, taskContext, stepContext->dt, fraction );
 	}
 
 	b3TracyCZoneEnd( bullet_body_task );
@@ -2142,6 +2243,10 @@ void b3BeginBullets( b3World* world, b3StepContext* stepContext )
 	if ( bulletBodyCount > 0 )
 	{
 		stepContext->bulletTicks = b3GetTicks();
+		if ( bulletBodyCount > 1 )
+		{
+			b3FindCustomBulletImpacts( stepContext, bulletBodyCount );
+		}
 
 		// Fast bullet bodies
 		// Note: a bullet body may be moving slow
@@ -2212,6 +2317,11 @@ void b3EndBullets( b3World* world, b3StepContext* stepContext )
 		b3TracyCZoneEnd( bullets );
 	}
 
+	if ( stepContext->bulletFractions != NULL )
+	{
+		b3StackFree( &world->stack, stepContext->bulletFractions );
+		stepContext->bulletFractions = NULL;
+	}
 	b3StackFree( &world->stack, stepContext->bulletBodies );
 	stepContext->bulletBodies = NULL;
 	b3AtomicStoreInt( &stepContext->bulletBodyCount, 0 );

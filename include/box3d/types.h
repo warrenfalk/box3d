@@ -405,7 +405,8 @@ typedef struct b3BodyDef
 	bool isAwake;
 
 	/// Treat this body as a high speed object that performs continuous collision detection
-	/// against dynamic and kinematic bodies, but not other bullet bodies.
+	/// against dynamic and kinematic bodies. Fast bullets with compatible custom hulls also
+	/// sweep against each other using their relative motion.
 	/// @warning Bullets should be used sparingly. They are not a solution for general
 	/// dynamic-versus-dynamic continuous collision. They do not guarantee accurate collision if
 	/// both bodies are fast moving because the bullet does a continuous check after all non-bullet
@@ -414,9 +415,9 @@ typedef struct b3BodyDef
 	/// collision, initial overlap is ignored to avoid freezing bodies in place. I do not recommend
 	/// using them for game projectiles if precise collision timing is needed. Instead consider
 	/// using a ray or shape cast. You can use a marching ray or shape cast for projectile that
-	/// moves over time. If you want a fast moving projectile to collide with a fast moving target,
-	/// you need to consider the relative movement in your ray or shape cast. This is out of the
-	/// scope of Box3D. So what are good use cases for bullets? Pinball games or games with dynamic
+	/// moves over time. For built-in shapes, consider the relative movement in your ray or shape cast
+	/// if a fast moving projectile needs to collide with a fast moving target. Good use cases for
+	/// bullets include pinball games or games with dynamic
 	/// containers that hold other objects. It should be a use case where it doesn't break the game
 	/// if there is a collision missed, but having them captured improves the quality of the game.
 	bool isBullet;

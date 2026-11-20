@@ -975,7 +975,8 @@ static int CollideCustomHull( const b3CustomHullOperand* a, const b3CustomHullOp
 							  float maxSeparation, b3CustomHullManifold* out )
 {
 	const b3Sphere* spheres = a->custom->geometry;
-	b3Sphere visitor = { b->proxy.points[0], b->proxy.radius };
+	b3Sphere visitor =
+		b->custom != NULL ? *(const b3Sphere*)b->custom->geometry : (b3Sphere){ b->proxy.points[0], b->proxy.radius };
 	int count = 0;
 	for ( int i = 0; i < 2; ++i )
 	{
@@ -1013,19 +1014,27 @@ static bool OverlapCustomHull( const void* geometry, const b3ShapeProxy* proxy )
 static b3TOIOutput SweepCustomHull( const b3CustomHullOperand* a, const b3CustomHullOperand* b, const b3Sweep* sweepA,
 									const b3Sweep* sweepB, float maxFraction )
 {
-	(void)a;
-	(void)b;
-	(void)sweepA;
-	(void)sweepB;
-	return (b3TOIOutput){ .state = b3_toiStateSeparated, .fraction = maxFraction };
+	if ( a->custom == NULL || b->custom == NULL )
+	{
+		return (b3TOIOutput){ .state = b3_toiStateSeparated, .fraction = maxFraction };
+	}
+	const b3Sphere* sphereA = a->custom->geometry;
+	const b3Sphere* sphereB = b->custom->geometry;
+	b3TOIInput input = { { &sphereA->center, 1, sphereA->radius },
+						 { &sphereB->center, 1, sphereB->radius },
+						 *sweepA,
+						 *sweepB,
+						 maxFraction };
+	return b3TimeOfImpact( &input );
 }
+
+static const b3CustomHullCallbacks customHullCallbacks = { CollideCustomHull, RayCastCustomHull, ShapeCastCustomHull,
+														   OverlapCustomHull, SweepCustomHull };
 
 static int CustomHullTest( void )
 {
 	const b3Sphere spheres[] = { { { 0.0f, 0.2f, 0.0f }, 0.5f }, { { 0.0f, -0.2f, 0.0f }, 0.5f } };
-	const b3CustomHullCallbacks callbacks = { CollideCustomHull, RayCastCustomHull, ShapeCastCustomHull,
-											  OverlapCustomHull, SweepCustomHull };
-	b3CustomHull geometry = { &callbacks, spheres, 0.5f };
+	b3CustomHull geometry = { &customHullCallbacks, spheres, 0.5f };
 	b3WorldDef worldDef = b3DefaultWorldDef();
 	worldDef.gravity = b3Vec3_zero;
 	b3WorldId world = b3CreateWorld( &worldDef );
@@ -1067,6 +1076,42 @@ static int CustomHullTest( void )
 	return 0;
 }
 
+static int CustomHullBulletTest( void )
+{
+	const b3Sphere spheres[] = { { { 0.0f, 0.2f, 0.0f }, 0.5f }, { { 0.0f, -0.2f, 0.0f }, 0.5f } };
+	b3CustomHull geometry = { &customHullCallbacks, spheres, 0.5f };
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	b3WorldId world = b3CreateWorld( &worldDef );
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.enableCustomHull = true;
+	shapeDef.updateBodyMass = false;
+	shapeDef.userData = &geometry;
+	b3BoxHull proxy = b3MakeBoxHull( 0.5f, 0.7f, 0.5f );
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.isBullet = true;
+	bodyDef.position.x = -1.5f;
+	bodyDef.linearVelocity.x = 100.0f;
+	b3BodyId a = b3CreateBody( world, &bodyDef );
+	bodyDef.position.x = 1.5f;
+	bodyDef.linearVelocity.x = -100.0f;
+	b3BodyId b = b3CreateBody( world, &bodyDef );
+	ENSURE( B3_IS_NON_NULL( b3CreateHullShape( a, &shapeDef, &proxy.base ) ) );
+	ENSURE( B3_IS_NON_NULL( b3CreateHullShape( b, &shapeDef, &proxy.base ) ) );
+	b3MassData mass = b3ComputeSphereMass( spheres, 1.0f );
+	mass.center = b3Vec3_zero;
+	b3Body_SetMassData( a, mass );
+	b3Body_SetMassData( b, mass );
+
+	// Each bullet travels 1.67 m. Neither reaches the other's starting proxy.
+	b3World_Step( world, 1.0f / 60.0f, 2 );
+	ENSURE_SMALL( b3Body_GetPosition( a ).x + 0.5f, 0.02f );
+	ENSURE_SMALL( b3Body_GetPosition( b ).x - 0.5f, 0.02f );
+	b3DestroyWorld( world );
+	return 0;
+}
+
 int ShapeTest( void )
 {
 	box = b3MakeBoxHull( 1.0f, 1.0f, 1.0f );
@@ -1076,6 +1121,7 @@ int ShapeTest( void )
 	RUN_SUBTEST( ShapeNameTest );
 	RUN_SUBTEST( ShapeFlagsTest );
 	RUN_SUBTEST( CustomHullTest );
+	RUN_SUBTEST( CustomHullBulletTest );
 	// RUN_SUBTEST( PointInShapeTest );
 	RUN_SUBTEST( RayCastShapeTest );
 
