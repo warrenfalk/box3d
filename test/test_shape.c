@@ -971,6 +971,102 @@ static int ShapeFlagsTest( void )
 	return 0;
 }
 
+static int CollideCustomHull( const b3CustomHullOperand* a, const b3CustomHullOperand* b, b3Transform transform,
+							  float maxSeparation, b3CustomHullManifold* out )
+{
+	const b3Sphere* spheres = a->custom->geometry;
+	b3Sphere visitor = { b->proxy.points[0], b->proxy.radius };
+	int count = 0;
+	for ( int i = 0; i < 2; ++i )
+	{
+		b3LocalManifoldPoint point;
+		b3LocalManifold manifold = { .points = &point };
+		b3CollideSpheres( &manifold, 1, spheres + i, &visitor, transform );
+		if ( manifold.pointCount > 0 && point.separation <= maxSeparation )
+		{
+			out[count++] = (b3CustomHullManifold){ .normal = manifold.normal,
+												   .pointCount = 1,
+												   .points = { { point.point, point.separation, (uint32_t)i } } };
+		}
+	}
+	return count;
+}
+
+static b3CastOutput RayCastCustomHull( const void* geometry, const b3RayCastInput* ray )
+{
+	const b3Sphere* spheres = geometry;
+	b3CastOutput a = b3RayCastSphere( spheres, ray );
+	b3CastOutput b = b3RayCastSphere( spheres + 1, ray );
+	return b.hit && ( !a.hit || b.fraction < a.fraction ) ? b : a;
+}
+
+static b3CastOutput ShapeCastCustomHull( const void* geometry, const b3ShapeCastInput* cast )
+{
+	return b3ShapeCastSphere( geometry, cast );
+}
+
+static bool OverlapCustomHull( const void* geometry, const b3ShapeProxy* proxy )
+{
+	return b3OverlapSphere( geometry, b3Transform_identity, proxy );
+}
+
+static b3TOIOutput SweepCustomHull( const b3CustomHullOperand* a, const b3CustomHullOperand* b, const b3Sweep* sweepA,
+									const b3Sweep* sweepB, float maxFraction )
+{
+	(void)a;
+	(void)b;
+	(void)sweepA;
+	(void)sweepB;
+	return (b3TOIOutput){ .state = b3_toiStateSeparated, .fraction = maxFraction };
+}
+
+static int CustomHullTest( void )
+{
+	const b3Sphere spheres[] = { { { 0.0f, 0.2f, 0.0f }, 0.5f }, { { 0.0f, -0.2f, 0.0f }, 0.5f } };
+	const b3CustomHullCallbacks callbacks = { CollideCustomHull, RayCastCustomHull, ShapeCastCustomHull,
+											  OverlapCustomHull, SweepCustomHull };
+	b3CustomHull geometry = { &callbacks, spheres, 0.5f };
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	b3WorldId world = b3CreateWorld( &worldDef );
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	b3BodyId ground = b3CreateBody( world, &bodyDef );
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.enableCustomHull = true;
+	shapeDef.updateBodyMass = false;
+	shapeDef.userData = &geometry;
+	b3ShapeId custom = b3CreateHullShape( ground, &shapeDef, &box.base );
+	ENSURE( B3_IS_NON_NULL( custom ) );
+
+	b3QueryFilter filter = b3DefaultQueryFilter();
+	b3RayResult miss =
+		b3World_CastRayClosest( world, (b3Pos){ -2.0f, 0.8f, 0.0f }, (b3Vec3){ 4.0f, 0.0f, 0.0f }, filter );
+	ENSURE( !miss.hit );
+	b3RayResult hit =
+		b3World_CastRayClosest( world, (b3Pos){ -2.0f, 0.2f, 0.0f }, (b3Vec3){ 4.0f, 0.0f, 0.0f }, filter );
+	ENSURE( hit.hit && B3_ID_EQUALS( hit.shapeId, custom ) );
+	ENSURE_SMALL( hit.fraction - 0.375f, FLT_EPSILON );
+
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.position = (b3Pos){ 0.6f, 0.0f, 0.0f };
+	b3BodyId body = b3CreateBody( world, &bodyDef );
+	shapeDef = b3DefaultShapeDef();
+	b3Sphere visitor = { b3Vec3_zero, 0.25f };
+	b3ShapeId shape = b3CreateSphereShape( body, &shapeDef, &visitor );
+	b3Body_SetLinearVelocity( body, (b3Vec3){ -2.0f, 0.0f, 0.0f } );
+	b3World_Step( world, 1.0f / 120.0f, 2 );
+	b3ContactData contact;
+	ENSURE( b3Shape_GetContactData( shape, &contact, 1 ) == 1 );
+	ENSURE( contact.manifoldCount == 2 );
+	ENSURE( contact.manifolds[0].points[0].totalNormalImpulse > 0 && contact.manifolds[1].points[0].totalNormalImpulse > 0 );
+	b3Body_SetAwake( body, false );
+	b3Body_SetAwake( body, true );
+	b3DestroyShape( custom, false );
+	ENSURE( b3Shape_GetContactData( shape, &contact, 1 ) == 0 );
+	b3DestroyWorld( world );
+	return 0;
+}
+
 int ShapeTest( void )
 {
 	box = b3MakeBoxHull( 1.0f, 1.0f, 1.0f );
@@ -979,6 +1075,7 @@ int ShapeTest( void )
 	RUN_SUBTEST( ShapeAABBTest );
 	RUN_SUBTEST( ShapeNameTest );
 	RUN_SUBTEST( ShapeFlagsTest );
+	RUN_SUBTEST( CustomHullTest );
 	// RUN_SUBTEST( PointInShapeTest );
 	RUN_SUBTEST( RayCastShapeTest );
 

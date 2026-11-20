@@ -178,6 +178,7 @@ static b3Shape* b3CreateShapeInternal( b3World* world, b3Body* body, b3WorldTran
 	shape->flags |= def->enableHitEvents ? b3_enableHitEvents : 0;
 	shape->flags |= def->enablePreSolveEvents ? b3_enablePreSolveEvents : 0;
 	shape->flags |= def->enableSpeculativeContact ? b3_enableSpeculative : 0;
+	shape->flags |= def->enableCustomHull ? b3_enableCustomHull : 0;
 	shape->proxyKey = B3_NULL_INDEX;
 	shape->localCentroid = b3GetShapeCentroid( shape );
 	shape->aabbMargin = b3ComputeShapeMargin( shape );
@@ -262,6 +263,19 @@ static b3ShapeId b3CreateShape( b3BodyId bodyId, const b3ShapeDef* def, const vo
 	if ( world == NULL )
 	{
 		return (b3ShapeId){ 0 };
+	}
+
+	if ( def->enableCustomHull )
+	{
+		const b3CustomHull* custom = def->userData;
+		if ( shapeType != b3_hullShape || def->isSensor || def->enableSensorEvents || def->updateBodyMass ||
+			 world->recording != NULL || custom == NULL || custom->callbacks == NULL ||
+			 !b3IsValidFloat( custom->minExtent ) || custom->minExtent <= 0.0f || custom->callbacks->Collide == NULL ||
+			 custom->callbacks->CastRay == NULL || custom->callbacks->CastShape == NULL ||
+			 custom->callbacks->Overlap == NULL || custom->callbacks->TimeOfImpact == NULL )
+		{
+			return b3_nullShapeId;
+		}
 	}
 
 	if ( world->shapes.count == B3_MAX_SHAPES && world->shapeIdPool.freeArray.count == 0 )
@@ -753,6 +767,11 @@ float b3GetShapeProjectedArea( const b3Shape* shape, b3Vec3 planeNormal )
 
 b3MassData b3ComputeShapeMass( const b3Shape* shape )
 {
+	if ( b3GetCustomHull( shape ) != NULL )
+	{
+		return (b3MassData){ 0 };
+	}
+
 	switch ( shape->type )
 	{
 		case b3_capsuleShape:
@@ -810,6 +829,11 @@ b3ShapeExtent b3ComputeShapeExtent( const b3Shape* shape, b3Vec3 localCenter )
 
 		case b3_hullShape:
 			extent = b3ComputeHullExtent( shape->hull, localCenter );
+			const b3CustomHull* custom = b3GetCustomHull( shape );
+			if ( custom != NULL )
+			{
+				extent.minExtent = custom->minExtent;
+			}
 			break;
 
 		case b3_meshShape:
@@ -842,7 +866,10 @@ float b3ComputeShapeMinExtent( const b3Shape* shape, b3Vec3 localCenter )
 			return shape->sphere.radius;
 
 		case b3_hullShape:
-			return shape->hull->innerRadius;
+		{
+			const b3CustomHull* custom = b3GetCustomHull( shape );
+			return custom != NULL ? custom->minExtent : shape->hull->innerRadius;
+		}
 
 		default:
 			return b3ComputeShapeExtent( shape, localCenter ).minExtent;
@@ -868,8 +895,12 @@ b3CastOutput b3RayCastShape( const b3Shape* shape, b3Transform transform, const 
 			output = b3RayCastSphere( &shape->sphere, &localInput );
 			break;
 		case b3_hullShape:
-			output = b3RayCastHull( shape->hull, &localInput );
-			break;
+		{
+			const b3CustomHull* custom = b3GetCustomHull( shape );
+			output = custom != NULL ? custom->callbacks->CastRay( custom->geometry, &localInput )
+									: b3RayCastHull( shape->hull, &localInput );
+		}
+		break;
 		case b3_meshShape:
 			output = b3RayCastMesh( &shape->mesh, &localInput );
 			break;
@@ -915,8 +946,12 @@ b3CastOutput b3ShapeCastShape( const b3Shape* shape, b3Transform transform, cons
 			break;
 
 		case b3_hullShape:
-			output = b3ShapeCastHull( shape->hull, &localInput );
-			break;
+		{
+			const b3CustomHull* custom = b3GetCustomHull( shape );
+			output = custom != NULL ? custom->callbacks->CastShape( custom->geometry, &localInput )
+									: b3ShapeCastHull( shape->hull, &localInput );
+		}
+		break;
 
 		case b3_meshShape:
 			output = b3ShapeCastMesh( &shape->mesh, &localInput );
@@ -949,7 +984,16 @@ bool b3OverlapShape( const b3Shape* shape, b3Transform transform, const b3ShapeP
 			return b3OverlapHeightField( shape->heightField, transform, proxy );
 
 		case b3_hullShape:
+		{
+			const b3CustomHull* custom = b3GetCustomHull( shape );
+			if ( custom != NULL )
+			{
+				b3Vec3 points[B3_MAX_SHAPE_CAST_POINTS];
+				b3ShapeProxy local = b3MakeLocalProxy( proxy, transform, points );
+				return custom->callbacks->Overlap( custom->geometry, &local );
+			}
 			return b3OverlapHull( shape->hull, transform, proxy );
+		}
 
 		case b3_meshShape:
 			return b3OverlapMesh( &shape->mesh, transform, proxy );
@@ -1101,6 +1145,18 @@ b3ShapeProxy b3MakeShapeProxy( const b3Shape* shape )
 	}
 }
 
+b3CustomHullOperand b3MakeCustomHullOperand( const b3Shape* shape )
+{
+	b3CustomHullOperand operand = { 0 };
+	operand.custom = b3GetCustomHull( shape );
+	if ( operand.custom == NULL )
+	{
+		operand.proxy = b3MakeShapeProxy( shape );
+		operand.hull = shape->type == b3_hullShape ? shape->hull : NULL;
+	}
+	return operand;
+}
+
 b3ShapeProxy b3MakeLocalProxy( const b3ShapeProxy* proxy, b3Transform transform, b3Vec3* buffer )
 {
 	b3Transform invTransform = b3InvertTransform( transform );
@@ -1156,7 +1212,10 @@ void b3Shape_SetUserData( b3ShapeId shapeId, void* userData )
 {
 	b3World* world = b3GetWorld( shapeId.world0 );
 	b3Shape* shape = b3GetShape( world, shapeId );
-	shape->userData = userData;
+	if ( b3GetCustomHull( shape ) == NULL )
+	{
+		shape->userData = userData;
+	}
 }
 
 void* b3Shape_GetUserData( b3ShapeId shapeId )
@@ -1444,9 +1503,13 @@ void b3Shape_EnableSensorEvents( b3ShapeId shapeId, bool flag )
 		return;
 	}
 
-	B3_REC( world, ShapeEnableSensorEvents, shapeId, flag );
-
 	b3Shape* shape = b3GetShape( world, shapeId );
+	if ( b3GetCustomHull( shape ) != NULL )
+	{
+		return;
+	}
+
+	B3_REC( world, ShapeEnableSensorEvents, shapeId, flag );
 	shape->flags = flag ? shape->flags | b3_enableSensorEvents : shape->flags & ~b3_enableSensorEvents;
 }
 
@@ -2273,6 +2336,21 @@ static bool b3CompoundTimeOfImpactFcn( const b3CompoundData* compound, int child
 
 b3TOIOutput b3ShapeTimeOfImpact( b3Shape* shapeA, b3Shape* shapeB, b3Sweep* sweepA, b3Sweep* sweepB, float maxFraction )
 {
+	const b3CustomHull* customA = b3GetCustomHull( shapeA );
+	const b3CustomHull* customB = b3GetCustomHull( shapeB );
+	if ( customA != NULL || customB != NULL )
+	{
+		if ( !b3IsConvex( shapeA->type ) || !b3IsConvex( shapeB->type ) ||
+			 ( customA != NULL && customB != NULL && customA->callbacks != customB->callbacks ) )
+		{
+			return (b3TOIOutput){ .state = b3_toiStateSeparated, .fraction = maxFraction };
+		}
+		b3CustomHullOperand a = b3MakeCustomHullOperand( shapeA );
+		b3CustomHullOperand b = b3MakeCustomHullOperand( shapeB );
+		const b3CustomHullCallbacks* callbacks = customA != NULL ? customA->callbacks : customB->callbacks;
+		return callbacks->TimeOfImpact( &a, &b, sweepA, sweepB, maxFraction );
+	}
+
 	bool isSensor = shapeA->sensorIndex != B3_NULL_INDEX;
 
 	b3ShapeType typeA = shapeA->type;

@@ -336,6 +336,7 @@ B3_API int b3Recording_GetSize( const b3Recording* recording );
 
 /// Begin recording world mutations into the provided buffer.
 /// The buffer is reset on each call so a single b3Recording can be reused for multiple sessions.
+/// Worlds with custom hulls cannot be recorded.
 /// @param worldId the world to record
 /// @param recording the recording handle to write into
 B3_API void b3World_StartRecording( b3WorldId worldId, b3Recording* recording );
@@ -954,7 +955,7 @@ B3_API void b3Shape_SetName( b3ShapeId shapeId, const char* name );
 /// Get the shape name. Returns an empty string if the name isn't set.
 B3_API const char* b3Shape_GetName( b3ShapeId shapeId );
 
-/// Set the user data for a shape
+/// Set the user data for a shape. Custom hulls keep the descriptor supplied at creation.
 B3_API void b3Shape_SetUserData( b3ShapeId shapeId, void* userData );
 
 /// Get the user data for a shape. This is useful when you get a shape id
@@ -1008,7 +1009,7 @@ B3_API b3Filter b3Shape_GetFilter( b3ShapeId shapeId );
 B3_API void b3Shape_SetFilter( b3ShapeId shapeId, b3Filter filter, bool invokeContacts );
 
 /// Enable sensor events for this shape. Only applies to kinematic and dynamic bodies. Ignored for
-/// sensors.
+/// sensors and custom hulls.
 /// @see b3ShapeDef::isSensor
 B3_API void b3Shape_EnableSensorEvents( b3ShapeId shapeId, bool flag );
 

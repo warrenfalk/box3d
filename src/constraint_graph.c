@@ -144,7 +144,7 @@ void b3AddContactToGraph( b3World* world, b3Contact* contact )
 	}
 #endif
 
-	bool isScalar = ( contact->flags & b3_simMeshContact ) || colorIndex == B3_OVERFLOW_INDEX;
+	bool isScalar = ( contact->flags & b3_simMultiManifold ) || colorIndex == B3_OVERFLOW_INDEX;
 
 	b3GraphColor* color = graph->colors + colorIndex;
 	contact->colorIndex = colorIndex;
@@ -168,7 +168,8 @@ void b3AddContactToGraph( b3World* world, b3Contact* contact )
 	}
 }
 
-void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int colorIndex, int localIndex, bool meshContact )
+void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int colorIndex, int localIndex,
+							   bool multiManifold )
 {
 	b3ConstraintGraph* graph = &world->constraintGraph;
 
@@ -182,7 +183,7 @@ void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int col
 		b3ClearBit( &color->bodySet, bodyIdB );
 	}
 
-	if ( meshContact || colorIndex == B3_OVERFLOW_INDEX )
+	if ( multiManifold || colorIndex == B3_OVERFLOW_INDEX )
 	{
 		int movedIndex = b3Array_RemoveSwap( color->contacts, localIndex );
 		if ( movedIndex != B3_NULL_INDEX )
@@ -207,7 +208,7 @@ void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int col
 			B3_ASSERT( movedContact->setIndex == b3_awakeSet );
 			B3_ASSERT( movedContact->colorIndex == colorIndex );
 			B3_ASSERT( movedContact->localIndex == movedIndex );
-			B3_ASSERT( ( movedContact->flags & b3_simMeshContact ) == 0 );
+			B3_ASSERT( ( movedContact->flags & b3_simMultiManifold ) == 0 );
 			movedContact->localIndex = localIndex;
 		}
 	}

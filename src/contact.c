@@ -145,6 +145,14 @@ void b3CreateContact( b3World* world, b3Shape* shapeA, b3Shape* shapeB, int chil
 {
 	b3ShapeType typeA = shapeA->type;
 	b3ShapeType typeB = shapeB->type;
+	const b3CustomHull* customA = b3GetCustomHull( shapeA );
+	const b3CustomHull* customB = b3GetCustomHull( shapeB );
+	bool customContact = customA != NULL || customB != NULL;
+	if ( customContact && ( !b3IsConvex( typeA ) || !b3IsConvex( typeB ) ||
+							( customA != NULL && customB != NULL && customA->callbacks != customB->callbacks ) ) )
+	{
+		return;
+	}
 
 	B3_ASSERT( 0 <= typeA && typeA < b3_shapeTypeCount );
 	B3_ASSERT( 0 <= typeB && typeB < b3_shapeTypeCount );
@@ -212,7 +220,11 @@ void b3CreateContact( b3World* world, b3Shape* shapeA, b3Shape* shapeB, int chil
 	contact->encodedBodySimA = b3EncodeBodySimIndex( bodyA );
 	contact->encodedBodySimB = b3EncodeBodySimIndex( bodyB );
 
-	if ( shapeA->type == b3_meshShape || shapeA->type == b3_heightShape )
+	if ( customContact )
+	{
+		contact->flags |= b3_simCustomHullContact;
+	}
+	else if ( shapeA->type == b3_meshShape || shapeA->type == b3_heightShape )
 	{
 		contact->flags |= b3_simMeshContact;
 	}
@@ -446,8 +458,8 @@ void b3DestroyContact( b3World* world, b3Contact* contact, bool wakeBodies )
 	{
 		// contact is an active constraint
 		B3_ASSERT( contact->setIndex == b3_awakeSet );
-		bool meshContact = contact->flags & b3_simMeshContact;
-		b3RemoveContactFromGraph( world, bodyIdA, bodyIdB, contact->colorIndex, contact->localIndex, meshContact );
+		bool multiManifold = contact->flags & b3_simMultiManifold;
+		b3RemoveContactFromGraph( world, bodyIdA, bodyIdB, contact->colorIndex, contact->localIndex, multiManifold );
 	}
 	else
 	{
@@ -479,9 +491,82 @@ void b3DestroyContact( b3World* world, b3Contact* contact, bool wakeBodies )
 	}
 }
 
+static bool b3ComputeCustomHullManifolds( b3World* world, b3Contact* contact, const b3Shape* shapeA,
+										  b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB )
+{
+	b3CustomHullOperand a = b3MakeCustomHullOperand( shapeA );
+	b3CustomHullOperand b = b3MakeCustomHullOperand( shapeB );
+	const b3CustomHullCallbacks* callbacks = a.custom != NULL ? a.custom->callbacks : b.custom->callbacks;
+	b3CustomHullManifold geometry[B3_MAX_MANIFOLDS];
+	float separation = ( contact->flags & b3_enableSpeculativePoints ) != 0 ? B3_SPECULATIVE_DISTANCE : 0.0f;
+	int count = callbacks->Collide( &a, &b, b3InvMulWorldTransforms( xfA, xfB ), separation, geometry );
+	B3_ASSERT( 0 <= count && count <= B3_MAX_MANIFOLDS );
+	count = b3ClampInt( count, 0, B3_MAX_MANIFOLDS );
+
+	int oldCount = contact->manifoldCount;
+	b3Manifold old[B3_MAX_MANIFOLDS];
+	if ( count > 0 && oldCount > 0 )
+	{
+		memcpy( old, contact->manifolds, oldCount * sizeof( b3Manifold ) );
+	}
+	if ( count != oldCount )
+	{
+		if ( oldCount > 0 )
+		{
+			b3FreeManifolds( world, contact->manifolds, oldCount );
+		}
+		contact->manifolds = count > 0 ? b3AllocateManifolds( world, count ) : NULL;
+		contact->manifoldCount = count;
+	}
+
+	b3Matrix3 matrixA = b3MakeMatrixFromQuat( xfA.q );
+	b3Vec3 originDelta = b3SubPos( xfA.p, xfB.p );
+	for ( int i = 0; i < count; ++i )
+	{
+		const b3CustomHullManifold* source = geometry + i;
+		b3Manifold* target = contact->manifolds + i;
+		B3_ASSERT( 0 < source->pointCount && source->pointCount <= B3_MAX_MANIFOLD_POINTS );
+		*target = (b3Manifold){ .normal = b3MulMV( matrixA, source->normal ), .pointCount = source->pointCount };
+		for ( int j = 0; j < source->pointCount; ++j )
+		{
+			const b3CustomHullPoint* point = source->points + j;
+			b3Vec3 anchorA = b3MulMV( matrixA, point->point );
+			b3ManifoldPoint* out = target->points + j;
+			*out = (b3ManifoldPoint){ .anchorA = anchorA,
+									  .anchorB = b3Add( anchorA, originDelta ),
+									  .separation = point->separation,
+									  .featureId = point->featureId,
+									  .triangleIndex = B3_NULL_INDEX };
+			for ( int k = 0; k < oldCount && !out->persisted; ++k )
+			{
+				if ( b3Dot( target->normal, old[k].normal ) < 0.95f )
+				{
+					continue;
+				}
+				for ( int l = 0; l < old[k].pointCount; ++l )
+				{
+					if ( old[k].points[l].featureId == point->featureId )
+					{
+						out->normalImpulse = old[k].points[l].normalImpulse;
+						out->persisted = true;
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	return count > 0;
+}
+
 static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact* contact, const b3Shape* shapeA,
 									 b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB, b3Arena arena )
 {
+	if ( contact->flags & b3_simCustomHullContact )
+	{
+		return b3ComputeCustomHullManifolds( world, contact, shapeA, xfA, shapeB, xfB );
+	}
+
 	b3ShapeType typeA = shapeA->type;
 	b3ShapeType typeB = shapeB->type;
 
@@ -630,7 +715,7 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
 		return false;
 	}
 
-	B3_ASSERT( contact->manifoldCount == 1 );
+	B3_ASSERT( contact->manifoldCount == 1 || ( contact->flags & b3_simCustomHullContact ) );
 
 	if ( flip )
 	{

@@ -617,6 +617,10 @@ typedef struct b3ShapeDef
 	/// and height fields).
 	bool enableSpeculativeContact;
 
+	/// Use the hull for bounds and take narrow-phase geometry from a b3CustomHull in userData.
+	/// Only supported for non-sensor hulls with manually supplied body mass.
+	bool enableCustomHull;
+
 	/// Used internally to detect a valid definition. DO NOT SET.
 	int internalValue;
 
@@ -3021,6 +3025,59 @@ typedef struct b3LocalManifold
 	/// The triangle feature involved.
 	b3TriangleFeature feature;
 } b3LocalManifold;
+
+/// One point of a custom contact in the first body's local frame.
+typedef struct b3CustomHullPoint
+{
+	b3Vec3 point;		///< Midpoint between the two surface witnesses.
+	float separation;	///< Negative for overlap.
+	uint32_t featureId; ///< Stable ID within the pair for warm starting.
+} b3CustomHullPoint;
+
+/// Up to B3_MAX_MANIFOLD_POINTS contacts with a shared normal from A toward B, in frame A.
+typedef struct b3CustomHullManifold
+{
+	b3Vec3 normal;									  ///< Unit normal in frame A.
+	int pointCount;									  ///< Number of valid points.
+	b3CustomHullPoint points[B3_MAX_MANIFOLD_POINTS]; ///< Contact points in frame A.
+} b3CustomHullManifold;
+
+/// Either custom geometry, or the proxy of a built-in sphere, capsule or hull.
+typedef struct b3CustomHullOperand
+{
+	const struct b3CustomHull* custom; ///< Custom geometry, if present.
+	b3ShapeProxy proxy;				   ///< Built-in shape in its body frame, otherwise empty.
+	const b3HullData* hull;			   ///< Hull topology, if the built-in shape is a hull.
+} b3CustomHullOperand;
+
+/// Narrow-phase callbacks for a hull with application-owned collision geometry.
+/// Callbacks may run concurrently during stepping. Each must use immutable geometry.
+typedef struct b3CustomHullCallbacks
+{
+	/// Return up to B3_MAX_MANIFOLDS contacts with geometry within maxSeparation.
+	int ( *Collide )( const b3CustomHullOperand* a, const b3CustomHullOperand* b, b3Transform bToA, float maxSeparation,
+					  b3CustomHullManifold* manifolds );
+	/// Inputs and outputs are in the target body frame.
+	b3CastOutput ( *CastRay )( const void* geometry, const b3RayCastInput* input );
+	/// Inputs and outputs are in the target body frame.
+	b3CastOutput ( *CastShape )( const void* geometry, const b3ShapeCastInput* input );
+	/// Test a built-in convex proxy in the target body frame.
+	bool ( *Overlap )( const void* geometry, const b3ShapeProxy* proxy );
+	/// Sweeps and result use Box3D's common origin, except each sweep's localCenter.
+	b3TOIOutput ( *TimeOfImpact )( const b3CustomHullOperand* a, const b3CustomHullOperand* b, const b3Sweep* sweepA,
+								   const b3Sweep* sweepB, float maxFraction );
+} b3CustomHullCallbacks;
+
+/// Borrowed collision descriptor for b3ShapeDef::enableCustomHull. The descriptor and geometry must
+/// outlive the shape. Supported against other custom hulls sharing its callbacks and built-in convex
+/// shapes. Use world/body ray casts, shape casts and convex overlap queries for custom geometry.
+/// The proxy hull supplies bounds, and recording and sensor events are unavailable for custom hulls.
+typedef struct b3CustomHull
+{
+	const b3CustomHullCallbacks* callbacks; ///< All callbacks must be set.
+	const void* geometry;					///< Application-owned data passed to callbacks.
+	float minExtent;						///< Smallest collision radius, used to trigger continuous collision.
+} b3CustomHull;
 
 /**@}*/ // collision
 

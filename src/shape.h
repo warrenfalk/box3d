@@ -20,7 +20,7 @@ typedef enum b3ShapeFlags
 	b3_enableCustomFiltering = 0x04,
 	b3_enableHitEvents = 0x08,
 	b3_enablePreSolveEvents = 0x10,
-	// 0x20 is free, it was the enlarged AABB flag before the broad-phase marked the tree
+	b3_enableCustomHull = 0x20,
 	b3_enableSpeculative = 0x40,
 } b3ShapeFlags;
 
@@ -65,6 +65,13 @@ typedef struct b3Shape
 	};
 
 } b3Shape;
+
+static inline const b3CustomHull* b3GetCustomHull( const b3Shape* shape )
+{
+	return ( shape->flags & b3_enableCustomHull ) != 0 ? shape->userData : NULL;
+}
+
+b3CustomHullOperand b3MakeCustomHullOperand( const b3Shape* shape );
 
 // A single material shape keeps its material inline. Multi material meshes and compounds own a heap
 // array. Reach the materials the same way for both: a single material shape presents its inline

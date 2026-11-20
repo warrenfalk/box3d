@@ -68,6 +68,9 @@ enum b3ContactFlags
 
 	// Enable speculative contact points
 	b3_enableSpeculativePoints = 0x01000000,
+
+	b3_simCustomHullContact = 0x02000000,
+	b3_simMultiManifold = b3_simMeshContact | b3_simCustomHullContact,
 };
 
 // A contact edge is used to connect bodies and contacts together

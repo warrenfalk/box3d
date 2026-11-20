@@ -770,8 +770,8 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 			taskContext->manifoldCounts[bucketIndex - 1] += 1;
 		}
 
-		// Update the mesh contact spec
-		if ( touching == true && wasTouching == true && ( contact->flags & b3_simMeshContact ) )
+		// Update the variable-size contact spec.
+		if ( touching == true && wasTouching == true && ( contact->flags & b3_simMultiManifold ) )
 		{
 			B3_ASSERT( contact->colorIndex != B3_NULL_INDEX );
 			B3_ASSERT( 0 <= contact->colorIndex && contact->colorIndex < B3_GRAPH_COLOR_COUNT );
@@ -1046,8 +1046,8 @@ static void b3EndCollide( b3StepContext* context )
 
 				b3AddNonTouchingContact( world, contact );
 
-				bool isMeshContact = contact->flags & b3_simMeshContact;
-				b3RemoveContactFromGraph( world, bodyIdA, bodyIdB, colorIndex, localIndex, isMeshContact );
+				bool multiManifold = contact->flags & b3_simMultiManifold;
+				b3RemoveContactFromGraph( world, bodyIdA, bodyIdB, colorIndex, localIndex, multiManifold );
 				contact = NULL;
 			}
 
@@ -2709,6 +2709,15 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
 	if ( world == NULL || recording == NULL || world->recording != NULL )
 	{
 		return;
+	}
+
+	for ( int i = 0; i < world->shapes.count; ++i )
+	{
+		const b3Shape* shape = world->shapes.data + i;
+		if ( shape->id == i && b3GetCustomHull( shape ) != NULL )
+		{
+			return;
+		}
 	}
 
 	b3StartRecordingIntoBuffer( world, recording );
@@ -4562,7 +4571,7 @@ void b3ValidateContacts( b3World* world )
 			{
 				B3_ASSERT( 0 <= contact->colorIndex && contact->colorIndex < B3_GRAPH_COLOR_COUNT );
 
-				if ( ( contact->flags & b3_simMeshContact ) != 0 || contact->colorIndex == B3_OVERFLOW_INDEX )
+				if ( ( contact->flags & b3_simMultiManifold ) != 0 || contact->colorIndex == B3_OVERFLOW_INDEX )
 				{
 					b3GraphColor* color = graph->colors + contact->colorIndex;
 					int contactId = b3Array_Get( color->contacts, contact->localIndex )->contactId;

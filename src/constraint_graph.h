@@ -72,7 +72,8 @@ void b3CreateGraph( b3ConstraintGraph* graph, int bodyCapacity );
 void b3DestroyGraph( b3ConstraintGraph* graph );
 
 void b3AddContactToGraph( b3World* world, b3Contact* contact );
-void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int colorIndex, int localIndex, bool meshContact );
+void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int colorIndex, int localIndex,
+							   bool multiManifold );
 
 b3JointSim* b3CreateJointInGraph( b3World* world, b3Joint* joint );
 void b3AddJointToGraph( b3World* world, b3JointSim* jointSim, b3Joint* joint );
